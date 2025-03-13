@@ -3,6 +3,7 @@ import sqlite3
 import csv
 import datetime
 import logging
+import requests
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QLabel, QVBoxLayout, QWidget, QComboBox, QTableWidget, QTableWidgetItem,
     QLineEdit, QPushButton, QMessageBox, QHBoxLayout, QInputDialog, QFileDialog, QTabWidget
@@ -24,6 +25,8 @@ def initialize_database():
     try:
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
+        
+        # Skapa tabellen 'users' om den inte finns
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id TEXT PRIMARY KEY,
@@ -31,6 +34,9 @@ def initialize_database():
                 school_class TEXT
             )
         """)
+        logging.info("Tabellen 'users' skapad eller redan existerar.")  # Felsökning
+        
+        # Skapa tabellen 'scans' om den inte finns
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS scans (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -38,6 +44,7 @@ def initialize_database():
                 timestamp TEXT
             )
         """)
+        logging.info("Tabellen 'scans' skapad eller redan existerar.")  # Felsökning
         
         # Lägg till fördefinierade användare om de inte redan finns
         predefined_users = [
@@ -46,8 +53,10 @@ def initialize_database():
         ]
         for card_id, name, school_class in predefined_users:
             cursor.execute("INSERT OR IGNORE INTO users (id, name, school_class) VALUES (?, ?, ?)", (card_id, name, school_class))
+            logging.info(f"Försökte lägga till användare: {card_id}, {name}, {school_class}")  # Felsökning
         
         conn.commit()
+        logging.info("Databas initierad och fördefinierade användare tillagda.")  # Felsökning
     except sqlite3.Error as e:
         logging.error(f"Databasfel: {e}")
     finally:
@@ -73,6 +82,7 @@ def get_user_info(card_id):
         cursor = conn.cursor()
         cursor.execute("SELECT name, school_class FROM users WHERE id = ?", (card_id,))
         result = cursor.fetchone()
+        logging.info(f"Databasfråga för kort-ID '{card_id}': Resultat = {result}")  # Felsökning
         return result if result else (None, None)
     except sqlite3.Error as e:
         logging.error(f"Databasfel: {e}")
@@ -177,7 +187,13 @@ class RFIDScannerApp(QMainWindow):
         self.setWindowTitle("RFID Scanner App")
         self.setGeometry(300, 200, 800, 600)
         self.setStyleSheet("background-color: #2E2E2E; color: white;")
-        self.setWindowIcon(QIcon("app_icon.png"))
+        
+        # Ladda loggan från GitHub
+        response = requests.get("https://github.com/filip243520/CardReader/raw/main/image.png")
+        if response.status_code == 200:
+            with open("app_icon.png", "wb") as file:
+                file.write(response.content)
+            self.setWindowIcon(QIcon("app_icon.png"))
 
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
@@ -188,7 +204,24 @@ class RFIDScannerApp(QMainWindow):
         self.menu = QComboBox()
         self.menu.addItems(["Skanna kort", "Visa användare", "Visa senaste skanningar", "Statistik", "Registrera kort", "Rensa loggar", "Exportera data", "Importera användare", "Rensa databas"])
         self.menu.currentIndexChanged.connect(self.switch_page)
-        self.menu.setStyleSheet("background-color: #444; color: white; font-size: 16px; padding: 5px; border-radius: 5px;")
+        self.menu.setStyleSheet("""
+            QComboBox {
+                background-color: #444;
+                color: white;
+                font-size: 16px;
+                padding: 5px;
+                border-radius: 5px;
+                border: 1px solid #555;
+            }
+            QComboBox::drop-down {
+                border: none;
+            }
+            QComboBox::down-arrow {
+                image: url(arrow.png);
+                width: 14px;
+                height: 14px;
+            }
+        """)
         self.layout.addWidget(self.menu)
 
         # Utgångsetikett
@@ -346,6 +379,11 @@ class RFIDScannerApp(QMainWindow):
         self.class_input = QLineEdit()
         register_button = QPushButton("Registrera")
 
+        # Fyll i kort-ID automatiskt om det finns ett väntande kort-ID
+        if self.pending_card_id:
+            self.card_id_input.setText(self.pending_card_id)
+            self.card_id_input.setReadOnly(True)  # Gör fältet skrivskyddat för att undvika ändringar
+
         self.card_id_input.setPlaceholderText("Kort-ID")
         self.name_input.setPlaceholderText("Namn")
         self.class_input.setPlaceholderText("Klass")
@@ -369,7 +407,15 @@ class RFIDScannerApp(QMainWindow):
             register_card(card_id, name, school_class)
             self.output_label.setText(f"Kortet har registrerats för {name} ({school_class})!")
             self.timer.start(CLEAR_DELAY)
+            
+            # Uppdatera gränssnittet och gå tillbaka till skanningssidan
             self.show_scan_page()
+            
+            # Automatisk skanning efter registrering
+            self.process_card_input(card_id)
+            
+            # Rensa pending_card_id
+            self.pending_card_id = None
         else:
             self.output_label.setText("Fyll i alla fält!")
 
@@ -385,17 +431,34 @@ class RFIDScannerApp(QMainWindow):
     def process_card_input(self, card_id):
         """Hantera kortskanning."""
         card_id = card_id.strip()
-        logging.info(f"Bearbetar kortinmatning: {card_id}")  # Felsökning
+        logging.info(f"Bearbetar kortinmatning: '{card_id}'")  # Felsökning
+
+        if not card_id:
+            logging.warning("Tomt kort-ID mottaget.")  # Felsökning
+            return
 
         name, school_class = get_user_info(card_id)
+        logging.info(f"Användarinformation: Namn = {name}, Klass = {school_class}")  # Felsökning
 
         if name:
             log_scan(card_id)
             self.output_label.setText(f"{name} ({school_class}) har skannat in sig")
             self.timer.start(CLEAR_DELAY)
         else:
-            self.output_label.setText("Okänt kort! Registrera det nedan:")
-            self.show_register_form()
+            # Fråga användaren om de vill registrera kortet
+            reply = QMessageBox.question(
+                self,
+                "Okänt kort",
+                "Kortet är inte registrerat. Vill du registrera det nu?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes
+            )
+            if reply == QMessageBox.Yes:
+                self.output_label.setText("Registrera nytt kort")
+                self.show_register_form()
+                self.pending_card_id = card_id  # Spara kort-ID för att fylla i formuläret automatiskt
+            else:
+                self.output_label.setText("Skanna ditt RFID-kort...")
 
     def clear_output(self):
         """Rensa meddelandet efter en fördröjning."""
@@ -446,7 +509,8 @@ class KeyEventFilter(QObject):
             if char.isprintable():
                 self.buffer += char
             if event.key() in (Qt.Key_Return, Qt.Key_Enter):
-                self.app_window.process_card_input(self.buffer)
+                if self.buffer:  # Kontrollera att bufferten inte är tom
+                    self.app_window.process_card_input(self.buffer)
                 self.buffer = ""  # Återställ buffern efter bearbetning
                 logging.info(f"Buffert återställd efter bearbetning av kort: {self.buffer}")  # Felsökning
         return super().eventFilter(obj, event)
