@@ -5,9 +5,9 @@ import datetime
 import logging
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QLabel, QVBoxLayout, QWidget, QComboBox, QTableWidget, QTableWidgetItem,
-    QLineEdit, QPushButton, QMessageBox, QHBoxLayout, QInputDialog, QFileDialog
+    QLineEdit, QPushButton, QMessageBox, QHBoxLayout, QInputDialog, QFileDialog, QTabWidget
 )
-from PyQt5.QtGui import QFont, QIcon, QColor
+from PyQt5.QtGui import QFont, QIcon, QColor, QPixmap
 from PyQt5.QtCore import Qt, QTimer, QObject, QEvent
 
 # Konstant
@@ -38,6 +38,15 @@ def initialize_database():
                 timestamp TEXT
             )
         """)
+        
+        # Lägg till fördefinierade användare om de inte redan finns
+        predefined_users = [
+            ("1095297406", "Sunny Gran", "23TEP"),
+            ("0271340527", "Eveline Lim", "23TEI")
+        ]
+        for card_id, name, school_class in predefined_users:
+            cursor.execute("INSERT OR IGNORE INTO users (id, name, school_class) VALUES (?, ?, ?)", (card_id, name, school_class))
+        
         conn.commit()
     except sqlite3.Error as e:
         logging.error(f"Databasfel: {e}")
@@ -177,7 +186,7 @@ class RFIDScannerApp(QMainWindow):
 
         # Meny
         self.menu = QComboBox()
-        self.menu.addItems(["Skanna kort", "Visa användare", "Visa senaste skanningar", "Rensa loggar", "Exportera data", "Importera användare", "Rensa databas"])
+        self.menu.addItems(["Skanna kort", "Visa användare", "Visa senaste skanningar", "Statistik", "Registrera kort", "Rensa loggar", "Exportera data", "Importera användare", "Rensa databas"])
         self.menu.currentIndexChanged.connect(self.switch_page)
         self.menu.setStyleSheet("background-color: #444; color: white; font-size: 16px; padding: 5px; border-radius: 5px;")
         self.layout.addWidget(self.menu)
@@ -289,6 +298,81 @@ class RFIDScannerApp(QMainWindow):
         table_layout.addWidget(self.scan_table)
         self.layout.addWidget(self.current_frame)
 
+    def show_statistics(self):
+        """Visa statistik över antal skanningar per användare."""
+        self.clear_page()
+        self.output_label.setText("Statistik")
+
+        self.current_frame = QWidget()
+        table_layout = QVBoxLayout(self.current_frame)
+
+        self.stat_table = QTableWidget()
+        self.stat_table.setColumnCount(3)
+        self.stat_table.setHorizontalHeaderLabels(["Namn", "Klass", "Antal Skanningar"])
+
+        try:
+            conn = sqlite3.connect(DB_FILE)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT users.name, users.school_class, COUNT(scans.id) 
+                FROM users 
+                LEFT JOIN scans ON users.id = scans.card_id 
+                GROUP BY users.id 
+                ORDER BY COUNT(scans.id) DESC
+            """)
+            stats = cursor.fetchall()
+            self.stat_table.setRowCount(len(stats))
+            for row, stat in enumerate(stats):
+                for col, data in enumerate(stat):
+                    self.stat_table.setItem(row, col, QTableWidgetItem(str(data)))
+        except sqlite3.Error as e:
+            logging.error(f"Databasfel: {e}")
+        finally:
+            conn.close()
+
+        table_layout.addWidget(self.stat_table)
+        self.layout.addWidget(self.current_frame)
+
+    def show_register_form(self):
+        """Visa registreringsformulär för nya kort."""
+        self.clear_page()
+        self.output_label.setText("Registrera nytt kort")
+
+        self.current_frame = QWidget()
+        register_layout = QVBoxLayout(self.current_frame)
+
+        self.card_id_input = QLineEdit()
+        self.name_input = QLineEdit()
+        self.class_input = QLineEdit()
+        register_button = QPushButton("Registrera")
+
+        self.card_id_input.setPlaceholderText("Kort-ID")
+        self.name_input.setPlaceholderText("Namn")
+        self.class_input.setPlaceholderText("Klass")
+
+        register_button.clicked.connect(self.register_new_card)
+
+        register_layout.addWidget(self.card_id_input)
+        register_layout.addWidget(self.name_input)
+        register_layout.addWidget(self.class_input)
+        register_layout.addWidget(register_button)
+
+        self.layout.addWidget(self.current_frame)
+
+    def register_new_card(self):
+        """Registrera ett nytt kort."""
+        card_id = self.card_id_input.text().strip()
+        name = self.name_input.text().strip()
+        school_class = self.class_input.text().strip()
+
+        if card_id and name and school_class:
+            register_card(card_id, name, school_class)
+            self.output_label.setText(f"Kortet har registrerats för {name} ({school_class})!")
+            self.timer.start(CLEAR_DELAY)
+            self.show_scan_page()
+        else:
+            self.output_label.setText("Fyll i alla fält!")
+
     def delete_user_from_table(self, row):
         """Ta bort en användare från tabellen och databasen."""
         card_id = self.user_table.item(row, 0).text()
@@ -311,43 +395,7 @@ class RFIDScannerApp(QMainWindow):
             self.timer.start(CLEAR_DELAY)
         else:
             self.output_label.setText("Okänt kort! Registrera det nedan:")
-            self.show_register_form(card_id)
-
-    def show_register_form(self, card_id):
-        """Visa registreringsformulär för nya kort."""
-        self.clear_page()
-        self.output_label.setText(f"Registrera kort: {card_id}")
-
-        self.current_frame = QWidget()
-        register_layout = QVBoxLayout(self.current_frame)
-
-        self.name_input = QLineEdit()
-        self.class_input = QLineEdit()
-        register_button = QPushButton("Registrera")
-
-        self.name_input.setPlaceholderText("Namn")
-        self.class_input.setPlaceholderText("Klass")
-
-        register_button.clicked.connect(lambda: self.register_new_card(card_id))
-
-        register_layout.addWidget(self.name_input)
-        register_layout.addWidget(self.class_input)
-        register_layout.addWidget(register_button)
-
-        self.layout.addWidget(self.current_frame)
-
-    def register_new_card(self, card_id):
-        """Registrera ett nytt kort."""
-        name = self.name_input.text().strip()
-        school_class = self.class_input.text().strip()
-
-        if name and school_class:
-            register_card(card_id, name, school_class)
-            self.output_label.setText(f"Kortet har registrerats för {name} ({school_class})!")
-            self.timer.start(CLEAR_DELAY)
-            self.show_scan_page()
-        else:
-            self.output_label.setText("Fyll i alla fält!")
+            self.show_register_form()
 
     def clear_output(self):
         """Rensa meddelandet efter en fördröjning."""
@@ -363,17 +411,21 @@ class RFIDScannerApp(QMainWindow):
         elif index == 2:
             self.show_recent_scans()
         elif index == 3:
+            self.show_statistics()
+        elif index == 4:
+            self.show_register_form()
+        elif index == 5:
             reply = QMessageBox.question(self, "Rensa loggar", "Är du säker på att du vill rensa loggarna?",
                                          QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if reply == QMessageBox.Yes:
                 clear_csv_file()
                 self.output_label.setText("Loggar rensade!")
                 self.timer.start(CLEAR_DELAY)
-        elif index == 4:
-            export_to_csv()
-        elif index == 5:
-            import_users_from_csv()
         elif index == 6:
+            export_to_csv()
+        elif index == 7:
+            import_users_from_csv()
+        elif index == 8:
             reply = QMessageBox.question(self, "Rensa databas", "Är du säker på att du vill rensa databasen?",
                                          QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if reply == QMessageBox.Yes:
